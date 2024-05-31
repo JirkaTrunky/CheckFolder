@@ -4,6 +4,9 @@ using System.Text.Json;
 
 namespace CheckFolders.Lib
 {
+    /// <summary>
+    /// Typ zmeny na souboru. Soubory, ktere nebyly zmeneny si nepamatuji. 
+    /// </summary>
     public enum FileChangeType
     {
         Added,
@@ -11,6 +14,9 @@ namespace CheckFolders.Lib
         Deleted
     }
 
+    /// <summary>
+    /// vysledem analyzy jednoho souboru
+    /// </summary>
     public class FileResult
     {
         public string Filename { get; set; } = string.Empty;
@@ -32,6 +38,9 @@ namespace CheckFolders.Lib
         }
     }
 
+    /// <summary>
+    /// Typ zmen na adresari nebo chyba.
+    /// </summary>
     public enum FolderChangeType
     {
         NewFolder,
@@ -39,6 +48,9 @@ namespace CheckFolders.Lib
         ErrorOnFolder
     }
 
+    /// <summary>
+    /// Vysledek analyzy adresare
+    /// </summary>
     public class FolderResult
     {
         public List<FileResult> Files { get; set; } = new List<FileResult>();
@@ -80,7 +92,8 @@ namespace CheckFolders.Lib
     }
 
     /// <summary>
-    /// // CheckFolder File Info  -  nazev FileInfo kolidoval s System.IO
+    /// CheckFolder File Info  -  nazev FileInfo kolidoval s System.IO
+    /// Informace o jednom souboru, ktere se ukladaji do db souboru
     /// </summary>
     public class CFFileInfo  
     {
@@ -91,13 +104,14 @@ namespace CheckFolders.Lib
 
     }
 
-    public class FileInfoDictionary : Dictionary<string, CFFileInfo>;
-    public class FolderInfo
-    {
-        public FileInfoDictionary Files { get; set; } = new();
-        public FolderInfo() { }
-    }
+    /// <summary>
+    /// slovnik ifnormace o souboru. Klicem je nazev souboru.
+    /// </summary>
+    public class FolderInfo : Dictionary<string, CFFileInfo>;
 
+    /// <summary>
+    /// trida, ktera zajistuje samotne poravnani adresare a podadresaru nebo vymaze db soubor
+    /// </summary>
     public class CheckFolders
     {
         // nazev souboru, ve kterem je ulozena informace FileInfo
@@ -200,7 +214,7 @@ namespace CheckFolders.Lib
                 else
                 {
                     var oldJson = File.ReadAllText(dbFilename);
-                    FileInfoDictionary? oldInfo = JsonSerializer.Deserialize<FileInfoDictionary>(oldJson);
+                    FolderInfo? oldInfo = JsonSerializer.Deserialize<FolderInfo>(oldJson);
 
                     if (oldInfo == null) throw new Exception("Chyba pri nacitani informaci z " + dbFilename);
 
@@ -221,7 +235,12 @@ namespace CheckFolders.Lib
 
         }
 
-        void SaveFileInfo(string dbFilename, FileInfoDictionary fi)
+        /// <summary>
+        /// Ulozi FileInfo do db souboru. Nastavi atributy souboru na Hidden a ReadOnly
+        /// </summary>
+        /// <param name="dbFilename"></param>
+        /// <param name="fi"></param>
+        void SaveFileInfo(string dbFilename, FolderInfo fi)
         {
             var json = JsonSerializer.Serialize(fi);
 
@@ -234,9 +253,14 @@ namespace CheckFolders.Lib
                 FileAttributes.ReadOnly);
         }
         
-        FileInfoDictionary CreateFileInfo(string folder)
+        /// <summary>
+        ///  Projde vsechny soubory v jednom adresari a vrati informace o nich (FileInfo)
+        /// </summary>
+        /// <param name="folder"></param>
+        /// <returns></returns>
+        FolderInfo CreateFileInfo(string folder)
         {
-            FileInfoDictionary files = new();
+            FolderInfo files = new();
 
             DirectoryInfo d = new DirectoryInfo(folder);
 
@@ -258,6 +282,12 @@ namespace CheckFolders.Lib
             return files;
         }
 
+        /// <summary>
+        /// Spocita hash jednoho souboru danym algoritmem
+        /// </summary>
+        /// <param name="filename"></param>
+        /// <param name="algorithm"></param>
+        /// <returns></returns>
         string GetFileHash(string filename, HashAlgorithm algorithm)
         {
             using (var stream = File.OpenRead(filename))
@@ -267,7 +297,15 @@ namespace CheckFolders.Lib
             }
         }
 
-        List<FileResult> CheckFolderChanges(string folder, FileInfoDictionary oldFiles, FileInfoDictionary newFiles)
+        /// <summary>
+        ///  porovna stary adresar s novym a najde zmeny. 
+        /// </summary>
+        /// <param name="folder">adresar, ktery se zpracovava, neprochazi se podadresare</param>
+        /// <param name="oldFiles">informace o starem adresari</param>
+        /// <param name="newFiles">informace o novem adresari - zde se vraci opravene cislo verze. Toto je treba ulozit do db souboru</param>
+        /// <returns></returns>
+        /// <exception cref="ArgumentNullException"></exception>
+        List<FileResult> CheckFolderChanges(string folder, FolderInfo oldFiles, FolderInfo newFiles)
         {
             if (oldFiles == null) throw new ArgumentNullException("oldFiles");
 
@@ -292,6 +330,8 @@ namespace CheckFolders.Lib
                     else
                     {
                         // soubor byl zmenen, nova verze
+                        newInfo.Value.Version++;        // inkremuntuje verzi v newInfo
+
                         result = new FileResult() { Filename = newInfo.Key, Type = FileChangeType.Modified, Version = newInfo.Value.Version + 1 };
                     }
                 }
@@ -307,6 +347,11 @@ namespace CheckFolders.Lib
             return results;
         }
 
+        /// <summary>
+        /// vymaze db soubory s FileInfo z adresare vcetne podadresaru.
+        /// </summary>
+        /// <param name="folder"></param>
+        /// <returns></returns>
         string DoDeleteTempFiles(string folder)
         {
             var fn = GetDbFilename(folder);
