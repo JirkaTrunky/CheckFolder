@@ -16,6 +16,20 @@ namespace CheckFolders.Lib
         public string Filename { get; set; } = string.Empty;
         public FileChangeType Type { get; set; }
         public int Version { get; set; }
+
+        public override string ToString()
+        {
+            string s= string.Empty;
+
+            switch (Type)
+            {
+                case FileChangeType.Added: s = "[A] " + Filename; break;
+                case FileChangeType.Modified: s = "[M] " + Filename + " (ve verzi " + Version + ") "; break;
+                case FileChangeType.Deleted: s = "[D] " + Filename; break;
+            }
+
+            return s ;
+        }
     }
 
     public enum FolderChangeType
@@ -34,25 +48,61 @@ namespace CheckFolders.Lib
         public string ErrorMsg = string.Empty;
         public FolderResult() { }
 
+        public override string ToString()
+        {
+            string s= string.Empty;
+            switch (Type)
+            {
+                case FolderChangeType.NewFolder: 
+                    s = "Nový adresář.";
+                    break;
+
+                case FolderChangeType.FolderExisted:
+                    if(Files.Count == 0)
+                    {
+                        s += "Žádné změny.";
+                        break;
+                    }
+
+                    foreach (var file in Files)
+                    {
+                        s += file.ToString() + "\n";
+                    }
+                    break;
+
+                case FolderChangeType.ErrorOnFolder:
+                        s += ErrorMsg;
+                    break;
+            }
+
+            return s;
+        }
     }
 
-    public class CFFileInfo     // CheckFolder File Info  -  nazev FileInfo kolidoval s System.IO
+    /// <summary>
+    /// // CheckFolder File Info  -  nazev FileInfo kolidoval s System.IO
+    /// </summary>
+    public class CFFileInfo  
     {
-        public string Filename { get; set; } = string.Empty;
-        public int Version { get; set; } = 1;
         public string Hash { get; set; } = string.Empty;
-        public CFFileInfo() { }
+        public int Version { get; set; } = 1;
+
+        public bool StillExists = false;        // poznamenavam si, ze soubor stale existuje, abych vedel, ktere jsou Deleted
 
     }
 
+    public class FileInfoDictionary : Dictionary<string, CFFileInfo>;
     public class FolderInfo
     {
-        public List<CFFileInfo> Files { get; set; } = new List<CFFileInfo> { };
+        public FileInfoDictionary Files { get; set; } = new();
         public FolderInfo() { }
     }
 
     public class CheckFolders
     {
+        // nazev souboru, ve kterem je ulozena informace FileInfo
+        const string DbFilename = "fileinfo.~db";    
+
         CheckFolderParams Params { get; set; }
 
         public CheckFolders(CheckFolderParams parametry)
@@ -67,24 +117,26 @@ namespace CheckFolders.Lib
         /// <summary>
         /// Zavolá funkci podle parametrů a výsledek vrátí v parametry.ResultString.
         /// </summary>
-        /// <returns>výslený string</returns>
-        public string DoWork()
+        /// <returns> v Params.ResultString >výslený string</returns>
+        public void DoWork()
         {
+            if (Params == null) throw new ArgumentNullException(nameof(Params));    // TODO nameof dat vsude
+                
             string s = string.Empty;
 
-            Directory.Exists(Params.FolderName);
-
-            if (Params != null)
+            if (!Directory.Exists(Params.FolderName))
             {
-                if (Params.DeleteTempFiles)
-                    s = DoDeleteTempFiles(Params.FolderName);
-                else
+                s = "Složka nebyla nalezena.";
+            }
+            else
+            {
+                if (!Params.DeleteTempFiles)
                     s = DoCheck(Params.FolderName);
-
-                Params.ResultString = s;
+                else
+                    s = DoDeleteTempFiles(Params.FolderName);
             }
 
-            return s;
+            Params.ResultString = s;
         }
 
         /// <summary>
@@ -97,7 +149,8 @@ namespace CheckFolders.Lib
         {
             string s = "Checking: " + folder + "\n";
 
-            CheckSingleFolder(folder);
+            var fr = CheckSingleFolder(folder);
+            s += fr.ToString();
 
             try
             { 
@@ -108,6 +161,7 @@ namespace CheckFolders.Lib
             }
             catch (System.UnauthorizedAccessException)
             {
+                s += "Unauthorized Access Exception on folder: " + folder;
             }
 
             return s;
@@ -119,9 +173,9 @@ namespace CheckFolders.Lib
         /// </summary>
         /// <param name="folder"></param>
         /// <returns></returns>
-        string GetDbFileName(string folder)
+        string GetDbFilename(string folder)
         {
-            return Path.Combine(folder, "fileinfo.~db");
+            return Path.Combine(folder, DbFilename);
         }
 
         /// <summary>
@@ -131,25 +185,34 @@ namespace CheckFolders.Lib
         /// <param name="folder"></param>
         FolderResult CheckSingleFolder(string folder)
         {
+            var dbFilename = GetDbFilename(folder);
+
             try
             {
-
-                if (!File.Exists(folder))
+                if (!File.Exists(dbFilename))
                 {
                     var fi = CreateFileInfo(folder);
 
-                    var json = JsonSerializer.Serialize(fi);
-
-                    File.WriteAllText(GetDbFileName(folder), json);
-
-
-
+                    SaveFileInfo(dbFilename, fi);
 
                     return new FolderResult() { Type = FolderChangeType.NewFolder };
                 }
+                else
+                {
+                    var oldJson = File.ReadAllText(dbFilename);
+                    FileInfoDictionary? oldInfo = JsonSerializer.Deserialize<FileInfoDictionary>(oldJson);
 
-                var files = CheckFolderChanges(folder);
-                return new FolderResult() { Type = FolderChangeType.FolderExisted, Files = files };
+                    if (oldInfo == null) throw new Exception("Chyba pri nacitani informaci z " + dbFilename);
+
+                    var newInfo = CreateFileInfo(folder);
+
+                    // provede porovnani adresaru, meni take newInfo
+                    var files = CheckFolderChanges(folder, oldInfo, newInfo);
+
+                    SaveFileInfo(dbFilename, newInfo);
+
+                    return new FolderResult() { Type = FolderChangeType.FolderExisted, Files = files };
+                }
             }
             catch (Exception ex)
             {
@@ -158,9 +221,22 @@ namespace CheckFolders.Lib
 
         }
 
-        List<CFFileInfo> CreateFileInfo(string folder)
+        void SaveFileInfo(string dbFilename, FileInfoDictionary fi)
         {
-            List<CFFileInfo> files = new List<CFFileInfo>();
+            var json = JsonSerializer.Serialize(fi);
+
+            File.SetAttributes(dbFilename, 0);
+
+            File.WriteAllText(dbFilename, json);
+
+            File.SetAttributes(dbFilename,
+                FileAttributes.Hidden |
+                FileAttributes.ReadOnly);
+        }
+        
+        FileInfoDictionary CreateFileInfo(string folder)
+        {
+            FileInfoDictionary files = new();
 
             DirectoryInfo d = new DirectoryInfo(folder);
 
@@ -170,9 +246,12 @@ namespace CheckFolders.Lib
             {
                 foreach (FileInfo file in Files)
                 {
-                    var info = new CFFileInfo() { Version = 1, Hash = GetFileHash(file.FullName, md5), Filename = file.Name };
+                    // preskocim soubor s FileInfo
+                    if(file.Name.Equals(DbFilename)) continue;
 
-                    files.Add(info);    
+                    var info = new CFFileInfo() { Version = 1, Hash = GetFileHash(file.FullName, md5)};
+
+                    files.Add(file.Name, info);    
                 }
             }
 
@@ -188,17 +267,49 @@ namespace CheckFolders.Lib
             }
         }
 
-        List<FileResult> CheckFolderChanges(string folder)
+        List<FileResult> CheckFolderChanges(string folder, FileInfoDictionary oldFiles, FileInfoDictionary newFiles)
         {
-            List<FileResult> files = new List<FileResult>();
+            if (oldFiles == null) throw new ArgumentNullException("oldFiles");
 
+            List <FileResult> results = new List<FileResult>();
 
-            return files;
+            foreach (var newInfo in newFiles)
+            {
+                FileResult ? result;
+
+                if(oldFiles.ContainsKey(newInfo.Key))
+                { 
+                    // soubor jiz existoval, porovnám Hash
+                    CFFileInfo oldInfo = oldFiles[newInfo.Key];
+
+                    oldInfo.StillExists = true;
+
+                    if (oldInfo.Hash.Equals(newInfo.Value.Hash))
+                    {
+                        // stejný soubor
+                        result = null;      // nezmenene soubory nevypisuji
+                    }
+                    else
+                    {
+                        // soubor byl zmenen, nova verze
+                        result = new FileResult() { Filename = newInfo.Key, Type = FileChangeType.Modified, Version = newInfo.Value.Version + 1 };
+                    }
+                }
+                else
+                {
+                    // novy soubor
+                    result = new FileResult() { Filename = newInfo.Key, Type = FileChangeType.Added, Version = 1 };
+                }
+
+                if(result != null) results.Add(result);
+            }
+
+            return results;
         }
 
         string DoDeleteTempFiles(string folder)
         {
-            var fn = GetDbFileName(folder);
+            var fn = GetDbFilename(folder);
 
             string s = "Deleting: " + fn + "\n";
 
@@ -216,7 +327,7 @@ namespace CheckFolders.Lib
             }
             catch (System.UnauthorizedAccessException)
             {
-                s += "Unauthorize dAccess Exception on folder: " + folder;
+                s += "Unauthorized Access Exception on folder: " + folder;
             }
 
             return s;
