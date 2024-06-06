@@ -19,7 +19,7 @@ namespace CheckFolders.Lib
     /// </summary>
     public class FileResult
     {
-        public string Filename { get; set; } = string.Empty;
+        public string FileName { get; set; } = string.Empty;
         public FileChangeType Type { get; set; }
         public int Version { get; set; }
 
@@ -29,12 +29,12 @@ namespace CheckFolders.Lib
 
             switch (Type)
             {
-                case FileChangeType.Added: s = "[A] " + Filename; break;
-                case FileChangeType.Modified: s = "[M] " + Filename + " (ve verzi " + Version + ") "; break;
-                case FileChangeType.Deleted: s = "[D] " + Filename; break;
+                case FileChangeType.Added: s = "[A] " + FileName; break;
+                case FileChangeType.Modified: s = "[M] " + FileName + " (ve verzi " + Version + ") "; break;
+                case FileChangeType.Deleted: s = "[D] " + FileName; break;
             }
 
-            return s ;
+            return s + "\n";
         }
     }
 
@@ -78,7 +78,7 @@ namespace CheckFolders.Lib
 
                     foreach (var file in Files)
                     {
-                        s += file.ToString() + "\n";
+                        s += file.ToString();
                     }
                     break;
 
@@ -87,7 +87,7 @@ namespace CheckFolders.Lib
                     break;
             }
 
-            return s;
+            return s + "\n";
         }
     }
 
@@ -115,7 +115,12 @@ namespace CheckFolders.Lib
     public class CheckFolders
     {
         // nazev souboru, ve kterem je ulozena informace FileInfo
-        const string DbFilename = "fileinfo.~db";    
+        const string DbFileName = "checkfolder.~db";    
+
+        /// <summary>
+        /// nazev adresare, tak, jak ho zadal uzivatel
+        /// </summary>
+        string oldFolderName = string.Empty;
 
         CheckFolderParams Params { get; set; }
 
@@ -123,6 +128,10 @@ namespace CheckFolders.Lib
         {
             Params = parametry;
 
+            // zapamatuje si název adresáře pro pozdější zkrácené zobrazení
+            oldFolderName = Params.FolderName;  
+
+            // rozpozná název adresáře začínající na ~
             Params.FolderName = Params.FolderName
               .Replace("~", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile))
               .Replace("//", "/");
@@ -161,10 +170,8 @@ namespace CheckFolders.Lib
         /// <returns></returns>
         string DoCheck(string folder)
         {
-            string s = "Checking: " + folder + "\n";
-
             var fr = CheckSingleFolder(folder);
-            s += fr.ToString();
+            string s = "Checking " + GetOldFolderName(folder) + "\n" + fr.ToString();
 
             try
             { 
@@ -175,21 +182,11 @@ namespace CheckFolders.Lib
             }
             catch (System.UnauthorizedAccessException)
             {
-                s += "Unauthorized Access Exception on folder: " + folder;
+                s += "Unauthorized Access Exception on folder: " + GetOldFolderName(folder) + "\n";
             }
 
             return s;
 
-        }
-
-        /// <summary>
-        /// vrátí úplné jméno souboru, ve kterém je uloženo FileInfo (v JSON)
-        /// </summary>
-        /// <param name="folder"></param>
-        /// <returns></returns>
-        string GetDbFilename(string folder)
-        {
-            return Path.Combine(folder, DbFilename);
         }
 
         /// <summary>
@@ -199,31 +196,31 @@ namespace CheckFolders.Lib
         /// <param name="folder"></param>
         FolderResult CheckSingleFolder(string folder)
         {
-            var dbFilename = GetDbFilename(folder);
+            var dbfn = GetDbFileName(folder);
 
             try
             {
-                if (!File.Exists(dbFilename))
+                if (!File.Exists(dbfn))
                 {
                     var fi = CreateFileInfo(folder);
 
-                    SaveFileInfo(dbFilename, fi);
+                    SaveFileInfo(dbfn, fi);
 
                     return new FolderResult() { Type = FolderChangeType.NewFolder };
                 }
                 else
                 {
-                    var oldJson = File.ReadAllText(dbFilename);
+                    var oldJson = File.ReadAllText(dbfn);
                     FolderInfo? oldInfo = JsonSerializer.Deserialize<FolderInfo>(oldJson);
 
-                    if (oldInfo == null) throw new Exception("Chyba pri nacitani informaci z " + dbFilename);
+                    if (oldInfo == null) throw new Exception("Chyba pri nacitani informaci z " + dbfn);
 
                     var newInfo = CreateFileInfo(folder);
 
                     // provede porovnani adresaru, meni take newInfo
                     var files = CheckFolderChanges(folder, oldInfo, newInfo);
 
-                    SaveFileInfo(dbFilename, newInfo);
+                    SaveFileInfo(dbfn, newInfo);
 
                     return new FolderResult() { Type = FolderChangeType.FolderExisted, Files = files };
                 }
@@ -236,6 +233,89 @@ namespace CheckFolders.Lib
         }
 
         /// <summary>
+        ///  porovna stary adresar s novym a najde zmeny. 
+        /// </summary>
+        /// <param name="folder">adresar, ktery se zpracovava, neprochazi se podadresare</param>
+        /// <param name="oldFiles">informace o starem adresari</param>
+        /// <param name="newFiles">informace o novem adresari - zde se vraci opravene cislo verze. Toto je treba ulozit do db souboru</param>
+        /// <returns></returns>
+        /// <exception cref="ArgumentNullException"></exception>
+        List<FileResult> CheckFolderChanges(string folder, FolderInfo oldFiles, FolderInfo newFiles)
+        {
+            if (oldFiles == null) throw new ArgumentNullException("oldFiles");
+
+            List<FileResult> results = new List<FileResult>();
+
+            foreach (var newInfo in newFiles)
+            {
+                FileResult? result;
+
+                if (oldFiles.ContainsKey(newInfo.Key))
+                {
+                    // soubor jiz existoval, porovnám Hash
+                    CFFileInfo oldInfo = oldFiles[newInfo.Key];
+
+                    oldInfo.StillExists = true;
+
+                    if (oldInfo.Hash.Equals(newInfo.Value.Hash))
+                    {
+                        // stejný soubor
+                        result = null;      // nezmenene soubory nevypisuji
+
+                        newInfo.Value.Version = oldInfo.Version;        // nová verze je stejna jako stare cislo verze
+
+                    }
+                    else
+                    {
+                        // soubor byl zmenen, nova verze
+                        newInfo.Value.Version = oldInfo.Version + 1;        // nová verze je o 1 vyssi nez stará verze
+
+                        result = new FileResult() { FileName = newInfo.Key, Type = FileChangeType.Modified, Version = newInfo.Value.Version };
+                    }
+                }
+                else
+                {
+                    // novy soubor
+                    result = new FileResult() { FileName = newInfo.Key, Type = FileChangeType.Added, Version = 1 };
+                }
+
+                if (result != null) results.Add(result);
+            }
+
+            foreach (var old in oldFiles)
+            {
+                if (!old.Value.StillExists)
+                    results.Add(new FileResult() { FileName = old.Key, Type = FileChangeType.Deleted });
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// vrátí úplné jméno souboru, ve kterém je uloženo FileInfo (v JSON)
+        /// </summary>
+        /// <param name="folder"></param>
+        /// <returns></returns>
+        string GetDbFileName(string folder)
+        {
+            return Path.Combine(folder, DbFileName);
+        }
+
+        /// <summary>
+        /// Vrati zkracey nazev adresare tak, jak ho uzivatel zadal.
+        /// Napriklad pokud uzivatel zadal ~\test,
+        /// pak pro vstup c:\users\username\test
+        /// vrati ~\test
+        /// </summary>
+        /// <param name="folder"></param>
+        /// <returns></returns>
+        string GetOldFolderName(string folder)
+        {
+            return folder.Replace(Params.FolderName, oldFolderName);
+        }
+
+
+        /// <summary>
         /// Ulozi FileInfo do db souboru. Nastavi atributy souboru na Hidden a ReadOnly
         /// </summary>
         /// <param name="dbFilename"></param>
@@ -244,7 +324,8 @@ namespace CheckFolders.Lib
         {
             var json = JsonSerializer.Serialize(fi);
 
-            File.SetAttributes(dbFilename, 0);
+            if(File.Exists(dbFilename))
+                File.SetAttributes(dbFilename, 0);
 
             File.WriteAllText(dbFilename, json);
 
@@ -270,8 +351,9 @@ namespace CheckFolders.Lib
             {
                 foreach (FileInfo file in Files)
                 {
-                    // preskocim soubor s FileInfo
-                    if(file.Name.Equals(DbFilename)) continue;
+                    // preskocim db soubor s FileInfo
+                    if(file.Name.Equals(DbFileName)) 
+                        continue;
 
                     var info = new CFFileInfo() { Version = 1, Hash = GetFileHash(file.FullName, md5)};
 
@@ -298,65 +380,15 @@ namespace CheckFolders.Lib
         }
 
         /// <summary>
-        ///  porovna stary adresar s novym a najde zmeny. 
-        /// </summary>
-        /// <param name="folder">adresar, ktery se zpracovava, neprochazi se podadresare</param>
-        /// <param name="oldFiles">informace o starem adresari</param>
-        /// <param name="newFiles">informace o novem adresari - zde se vraci opravene cislo verze. Toto je treba ulozit do db souboru</param>
-        /// <returns></returns>
-        /// <exception cref="ArgumentNullException"></exception>
-        List<FileResult> CheckFolderChanges(string folder, FolderInfo oldFiles, FolderInfo newFiles)
-        {
-            if (oldFiles == null) throw new ArgumentNullException("oldFiles");
-
-            List <FileResult> results = new List<FileResult>();
-
-            foreach (var newInfo in newFiles)
-            {
-                FileResult ? result;
-
-                if(oldFiles.ContainsKey(newInfo.Key))
-                { 
-                    // soubor jiz existoval, porovnám Hash
-                    CFFileInfo oldInfo = oldFiles[newInfo.Key];
-
-                    oldInfo.StillExists = true;
-
-                    if (oldInfo.Hash.Equals(newInfo.Value.Hash))
-                    {
-                        // stejný soubor
-                        result = null;      // nezmenene soubory nevypisuji
-                    }
-                    else
-                    {
-                        // soubor byl zmenen, nova verze
-                        newInfo.Value.Version++;        // inkremuntuje verzi v newInfo
-
-                        result = new FileResult() { Filename = newInfo.Key, Type = FileChangeType.Modified, Version = newInfo.Value.Version + 1 };
-                    }
-                }
-                else
-                {
-                    // novy soubor
-                    result = new FileResult() { Filename = newInfo.Key, Type = FileChangeType.Added, Version = 1 };
-                }
-
-                if(result != null) results.Add(result);
-            }
-
-            return results;
-        }
-
-        /// <summary>
         /// vymaze db soubory s FileInfo z adresare vcetne podadresaru.
         /// </summary>
         /// <param name="folder"></param>
         /// <returns></returns>
         string DoDeleteTempFiles(string folder)
         {
-            var fn = GetDbFilename(folder);
+            var fn = GetDbFileName(folder);
 
-            string s = "Deleting: " + fn + "\n";
+            string s = "Deleting " + GetOldFolderName(fn) + "\n";
 
             if (File.Exists(s))
             {
@@ -372,7 +404,7 @@ namespace CheckFolders.Lib
             }
             catch (System.UnauthorizedAccessException)
             {
-                s += "Unauthorized Access Exception on folder: " + folder;
+                s += "Unauthorized Access Exception on folder: " + GetOldFolderName(folder);
             }
 
             return s;

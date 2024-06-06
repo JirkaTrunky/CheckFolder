@@ -3,6 +3,10 @@ using System.ComponentModel.DataAnnotations;
 
 namespace CheckFolders.Models
 {
+
+    /// <summary>
+    /// parametry pro CheckFolders
+    /// </summary>
     public class CheckFolderParams
     {
         [Display(Name= "Folder name")]

@@ -34,7 +34,7 @@ namespace CheckFolders.Controllers
         [HttpGet]
         public ActionResult SelectFolder()
         {
-            var data = new CheckFolderParams() { FolderName = "~", DeleteTempFiles = false };
+            var data = new CheckFolderParams() { FolderName = "~\\test", DeleteTempFiles = false };
 
             return View(data);
         }
